@@ -27,18 +27,23 @@ gdoc-comments-md/
 │   │   └── settings/
 │   │       └── +page.svelte  # OAuth setup
 │   └── lib/
-│       ├── components/    # Reusable UI components
+│       ├── components/
+│       │   └── HistoryList.svelte # Conversion history list UI
 │       ├── services/
 │       │   ├── google-auth.ts    # OAuth2 flow
 │       │   ├── google-docs.ts    # Document fetch (Docs API)
 │       │   ├── google-drive.ts   # Comments fetch (Drive API)
+│       │   ├── markdown-storage.ts # IndexedDB cache for markdown
 │       │   └── transformer.ts    # Markdown generation
 │       ├── stores/
-│       │   └── auth.ts    # Auth state (Svelte 5 runes)
+│       │   ├── auth.svelte.ts    # Auth state (Svelte 5 runes)
+│       │   └── history.svelte.ts # Conversion history state
 │       ├── types/
-│       │   └── google.ts  # API response types
+│       │   ├── google.ts  # API response types
+│       │   └── history.ts # History entry types
 │       └── utils/
-│           └── anchors.ts # Anchor placement logic
+│           ├── time.ts    # Relative time formatting
+│           └── url.ts     # URL/doc ID extraction
 ├── tests/
 │   ├── unit/              # Vitest unit tests
 │   ├── e2e/               # Playwright browser tests
@@ -129,6 +134,16 @@ GOOGLE_TEST_DOC_ID=your-test-document-id
 | `google-docs.ts` | Fetch document content via Docs API |
 | `google-drive.ts` | Fetch comments via Drive API |
 | `transformer.ts` | Convert document + comments to markdown |
+| `markdown-storage.ts` | IndexedDB cache for converted markdown content |
+
+### Client-Side Storage
+
+| Key/DB | Type | Purpose |
+|--------|------|---------|
+| `gdoc_auth` | localStorage | OAuth token + user info |
+| `gdoc_client_id` | localStorage | Google OAuth Client ID |
+| `gdoc_history` | localStorage | Conversion history metadata (max 50 entries) |
+| `gdoc_comments` | IndexedDB | Full markdown content cache (store: `markdown`, keyPath: `docId`) |
 
 ### Transformation Pipeline
 
@@ -206,9 +221,10 @@ if (!response.ok) {
 
 ## Git Workflow
 
-- Development happens on `main` branch
+- Development happens on `main` branch — always stay on `main` locally
 - `production` branch triggers GitHub Pages deploy via GitHub Actions
 - Branches are kept in a linear graph — no PRs needed, push main to production directly: `git push origin main:production`
+- Never switch to `production` locally; deploy by pushing main to production: `git push origin main:production`
 - Never commit credentials or `.env` files
 - Run `npm test` before committing
 

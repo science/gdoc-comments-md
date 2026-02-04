@@ -1,8 +1,22 @@
 <script lang="ts">
 	import { base } from '$app/paths';
 	import { getAuthState } from '$lib/stores/auth.svelte';
+	import { getHistoryState, removeEntry, clearHistory } from '$lib/stores/history.svelte';
+	import { deleteMarkdown, deleteAllMarkdown } from '$lib/services/markdown-storage';
+	import HistoryList from '$lib/components/HistoryList.svelte';
 
 	const auth = getAuthState();
+	const history = getHistoryState();
+
+	function handleDelete(docId: string) {
+		removeEntry(docId);
+		deleteMarkdown(docId);
+	}
+
+	function handleClearAll() {
+		clearHistory();
+		deleteAllMarkdown();
+	}
 </script>
 
 <svelte:head>
@@ -38,6 +52,8 @@
 &gt; [c1] **Steve** (steve@email.com):
 &gt; This is a reply</code></pre>
 	</section>
+
+	<HistoryList entries={history.entries} onDelete={handleDelete} onClearAll={handleClearAll} />
 
 	<section class="text-center">
 		{#if auth.isAuthenticated}

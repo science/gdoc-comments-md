@@ -1,10 +1,15 @@
 <script lang="ts">
 	import { base } from '$app/paths';
+	import { page } from '$app/stores';
+	import { onMount } from 'svelte';
 	import { getAuthState } from '$lib/stores/auth.svelte';
+	import { addEntry, getEntryByDocId, restoreHistory } from '$lib/stores/history.svelte';
+	import { saveMarkdown, getMarkdown } from '$lib/services/markdown-storage';
 	import { extractDocumentId } from '$lib/utils/url';
 	import { fetchDocument } from '$lib/services/google-docs';
 	import { fetchComments } from '$lib/services/google-drive';
 	import { transformToMarkdown, convertDriveComments } from '$lib/services/transformer';
+	import { formatRelativeTime } from '$lib/utils/time';
 
 	const auth = getAuthState();
 
@@ -15,6 +20,27 @@
 	let docTitle = $state<string | null>(null);
 	let commentCount = $state(0);
 	let copied = $state(false);
+	let cachedAt = $state<number | null>(null);
+
+	onMount(async () => {
+		const historyId = $page.url.searchParams.get('historyId');
+		if (!historyId) return;
+
+		// Ensure history is loaded (child onMount runs before layout onMount)
+		restoreHistory();
+
+		const entry = getEntryByDocId(historyId);
+		if (!entry) return;
+
+		const cached = await getMarkdown(historyId);
+		if (!cached) return;
+
+		docUrl = entry.docUrl;
+		docTitle = entry.docTitle;
+		commentCount = entry.commentCount;
+		markdownOutput = cached;
+		cachedAt = entry.convertedAt;
+	});
 
 	async function handleConvert() {
 		if (!docUrl.trim()) {
@@ -56,6 +82,17 @@
 
 			// Transform to markdown
 			markdownOutput = transformToMarkdown(doc, threads);
+			cachedAt = null;
+
+			// Save to history
+			addEntry({
+				docId: documentId,
+				docUrl: docUrl.trim(),
+				docTitle: doc.title,
+				commentCount,
+				convertedAt: Date.now()
+			});
+			saveMarkdown(documentId, markdownOutput);
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'An error occurred';
 		} finally {
@@ -93,13 +130,15 @@
 <div class="space-y-6">
 	<h1 class="text-2xl font-bold">Convert Document</h1>
 
-	{#if !auth.isAuthenticated}
+	{#if !auth.isAuthenticated && !markdownOutput}
 		<div class="bg-yellow-900/50 border border-yellow-700 rounded-lg p-4">
 			<p class="text-yellow-200">
 				Please <a href="{base}/settings" class="underline hover:text-yellow-100">connect your Google account</a> first.
 			</p>
 		</div>
-	{:else}
+	{/if}
+
+	{#if auth.isAuthenticated}
 		<div class="bg-gray-800 rounded-lg p-6 border border-gray-700 space-y-4">
 			<div>
 				<label for="doc-url" class="block text-sm font-medium text-gray-300 mb-2">
@@ -129,31 +168,44 @@
 				{isLoading ? 'Converting...' : 'Convert to Markdown'}
 			</button>
 		</div>
+	{/if}
 
-		{#if markdownOutput}
-			<div class="bg-gray-800 rounded-lg p-6 border border-gray-700 space-y-4">
-				<div class="flex items-center justify-between flex-wrap gap-4">
-					<div>
-						<h2 class="text-lg font-semibold">{docTitle}</h2>
-						<p class="text-sm text-gray-400">{commentCount} comment{commentCount !== 1 ? 's' : ''} found</p>
-					</div>
-					<div class="flex gap-2">
-						<button
-							onclick={copyToClipboard}
-							class="text-sm bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded transition-colors"
-						>
-							{copied ? 'Copied!' : 'Copy to Clipboard'}
-						</button>
-						<button
-							onclick={downloadMarkdown}
-							class="text-sm bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded transition-colors"
-						>
-							Download .md
-						</button>
-					</div>
+	{#if markdownOutput}
+		<div class="bg-gray-800 rounded-lg p-6 border border-gray-700 space-y-4">
+			<div class="flex items-center justify-between flex-wrap gap-4">
+				<div>
+					<h2 class="text-lg font-semibold">{docTitle}</h2>
+					<p class="text-sm text-gray-400">{commentCount} comment{commentCount !== 1 ? 's' : ''} found</p>
+					{#if cachedAt}
+						<p class="text-sm text-yellow-400 mt-1" data-testid="cached-indicator">
+							Cached from {formatRelativeTime(cachedAt)}
+							{#if auth.isAuthenticated}
+								<button
+									onclick={handleConvert}
+									class="ml-2 text-blue-400 hover:text-blue-300 underline"
+								>
+									Re-fetch from Google
+								</button>
+							{/if}
+						</p>
+					{/if}
 				</div>
-				<pre class="bg-gray-900 p-4 rounded text-sm overflow-x-auto max-h-[500px] overflow-y-auto"><code class="text-gray-300">{markdownOutput}</code></pre>
+				<div class="flex gap-2">
+					<button
+						onclick={copyToClipboard}
+						class="text-sm bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded transition-colors"
+					>
+						{copied ? 'Copied!' : 'Copy to Clipboard'}
+					</button>
+					<button
+						onclick={downloadMarkdown}
+						class="text-sm bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded transition-colors"
+					>
+						Download .md
+					</button>
+				</div>
 			</div>
-		{/if}
+			<pre class="bg-gray-900 p-4 rounded text-sm overflow-x-auto max-h-[500px] overflow-y-auto"><code class="text-gray-300">{markdownOutput}</code></pre>
+		</div>
 	{/if}
 </div>

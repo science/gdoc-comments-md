@@ -3,6 +3,7 @@
 	import { base } from '$app/paths';
 	import { onMount } from 'svelte';
 	import { getAuthState, restoreAuth, setAuth, isTokenExpired } from '$lib/stores/auth.svelte';
+	import { restoreHistory } from '$lib/stores/history.svelte';
 	import { initGoogleAuth, silentRefresh } from '$lib/services/google-auth';
 	import type { TokenResponse } from '$lib/services/google-auth';
 
@@ -12,6 +13,9 @@
 	onMount(() => {
 		// Try to restore auth from localStorage
 		const restored = restoreAuth();
+
+		// Restore conversion history
+		restoreHistory();
 
 		// Initialize GIS for potential silent refresh
 		const clientId = localStorage.getItem('gdoc_client_id');
