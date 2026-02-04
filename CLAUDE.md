@@ -207,6 +207,8 @@ if (!response.ok) {
 ## Git Workflow
 
 - Development happens on `main` branch
+- `production` branch triggers GitHub Pages deploy via GitHub Actions
+- Branches are kept in a linear graph — no PRs needed, push main to production directly: `git push origin main:production`
 - Never commit credentials or `.env` files
 - Run `npm test` before committing
 
