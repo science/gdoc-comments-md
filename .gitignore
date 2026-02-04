@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+.svelte-kit/
+build/
+dist/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Google OAuth credentials
+client_secret_*.json
+*.json:Zone.Identifier
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+coverage/
+playwright-report/
+test-results/
+
+# Logs
+*.log
+npm-debug.log*
