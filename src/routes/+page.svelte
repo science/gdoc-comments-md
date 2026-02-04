@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { base } from '$app/paths';
 	import { getAuthState } from '$lib/stores/auth.svelte';
 
 	const auth = getAuthState();
@@ -21,8 +22,8 @@
 	<section class="bg-gray-800 rounded-lg p-6 border border-gray-700">
 		<h2 class="text-lg font-semibold mb-4">How it works</h2>
 		<ol class="list-decimal list-inside space-y-2 text-gray-300">
-			<li>Connect your Google account in <a href="/settings" class="text-blue-400 hover:underline">Settings</a></li>
-			<li>Paste a Google Doc URL on the <a href="/convert" class="text-blue-400 hover:underline">Convert</a> page</li>
+			<li>Connect your Google account in <a href="{base}/settings" class="text-blue-400 hover:underline">Settings</a></li>
+			<li>Paste a Google Doc URL on the <a href="{base}/convert" class="text-blue-400 hover:underline">Convert</a> page</li>
 			<li>Get markdown with inline comment anchors and threaded replies</li>
 		</ol>
 	</section>
@@ -41,14 +42,14 @@
 	<section class="text-center">
 		{#if auth.isAuthenticated}
 			<a
-				href="/convert"
+				href="{base}/convert"
 				class="inline-block bg-blue-600 hover:bg-blue-700 text-white font-medium px-6 py-3 rounded-lg transition-colors"
 			>
 				Convert a Document
 			</a>
 		{:else}
 			<a
-				href="/settings"
+				href="{base}/settings"
 				class="inline-block bg-blue-600 hover:bg-blue-700 text-white font-medium px-6 py-3 rounded-lg transition-colors"
 			>
 				Connect Google Account

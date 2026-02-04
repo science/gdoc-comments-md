@@ -1,5 +1,7 @@
 # gdoc-comments-md
 
+**Live app:** [science.github.io/gdoc-comments-md](https://science.github.io/gdoc-comments-md/)
+
 Web application that extracts Google Docs comment threads and converts them to a clean, readable markdown format with inline anchors and threaded replies.
 
 ## What it does
@@ -42,7 +44,7 @@ Comments are linked to their highlighted text via `[text]^[cN]` anchors, with fu
 2. Create or select a project
 3. Enable **Google Docs API** and **Google Drive API**
 4. Create OAuth 2.0 credentials (Web application type)
-5. Add `http://localhost:5173` to Authorized JavaScript origins
+5. Add `http://localhost:5173` and `https://science.github.io` to Authorized JavaScript origins
 6. Configure the OAuth consent screen (add yourself as a test user)
 
 ### Install and Run

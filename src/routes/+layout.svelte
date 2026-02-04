@@ -1,5 +1,6 @@
 <script lang="ts">
 	import '../app.css';
+	import { base } from '$app/paths';
 	import { onMount } from 'svelte';
 	import { getAuthState, restoreAuth, setAuth, isTokenExpired } from '$lib/stores/auth.svelte';
 	import { initGoogleAuth, silentRefresh } from '$lib/services/google-auth';
@@ -52,14 +53,14 @@
 	<header class="bg-gray-800 border-b border-gray-700">
 		<nav class="max-w-4xl mx-auto px-4 py-4">
 			<div class="flex items-center justify-between">
-				<a href="/" class="text-xl font-semibold text-blue-400 hover:text-blue-300">
+				<a href="{base}/" class="text-xl font-semibold text-blue-400 hover:text-blue-300">
 					GDoc Comments
 				</a>
 				<div class="flex items-center gap-4">
-					<a href="/convert" class="text-gray-300 hover:text-white transition-colors">
+					<a href="{base}/convert" class="text-gray-300 hover:text-white transition-colors">
 						Convert
 					</a>
-					<a href="/settings" class="text-gray-300 hover:text-white transition-colors">
+					<a href="{base}/settings" class="text-gray-300 hover:text-white transition-colors">
 						Settings
 					</a>
 					{#if auth.isAuthenticated && auth.user}
@@ -76,7 +77,8 @@
 
 	<footer class="bg-gray-800 border-t border-gray-700 py-4">
 		<div class="max-w-4xl mx-auto px-4 text-center text-gray-500 text-sm">
-			Extract Google Docs comments to markdown
+			Extract Google Docs comments to markdown &middot;
+			<a href="https://github.com/science/gdoc-comments-md" target="_blank" class="text-gray-400 hover:text-gray-300">GitHub</a>
 		</div>
 	</footer>
 </div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { base } from '$app/paths';
 	import { getAuthState } from '$lib/stores/auth.svelte';
 	import { extractDocumentId } from '$lib/utils/url';
 	import { fetchDocument } from '$lib/services/google-docs';
@@ -95,7 +96,7 @@
 	{#if !auth.isAuthenticated}
 		<div class="bg-yellow-900/50 border border-yellow-700 rounded-lg p-4">
 			<p class="text-yellow-200">
-				Please <a href="/settings" class="underline hover:text-yellow-100">connect your Google account</a> first.
+				Please <a href="{base}/settings" class="underline hover:text-yellow-100">connect your Google account</a> first.
 			</p>
 		</div>
 	{:else}

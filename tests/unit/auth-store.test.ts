@@ -97,7 +97,7 @@ describe('auth store', () => {
 		});
 
 		it('returns false when nothing stored', () => {
-			localStorageMock.getItem.mockReturnValueOnce(null);
+			localStorageMock.getItem.mockReturnValueOnce(null as unknown as string);
 			expect(restoreAuth()).toBe(false);
 		});
 
