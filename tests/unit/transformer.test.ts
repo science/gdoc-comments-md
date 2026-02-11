@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
 	transformToMarkdown,
+	transformWithPageFilter,
 	extractTextContent,
 	formatCommentThread
 } from '$lib/services/transformer';
@@ -296,5 +297,88 @@ describe('transformToMarkdown - comments', () => {
 		const textLineIndex = lines.findIndex(l => l.includes('[some]^[c1]'));
 		const commentLineIndex = lines.findIndex(l => l.includes('> [c1] **Alice**'));
 		expect(commentLineIndex).toBeGreaterThan(textLineIndex);
+	});
+});
+
+describe('transformWithPageFilter', () => {
+	// Build a doc with enough text to span multiple pages
+	function makeMultiPageDoc(): GoogleDocsDocument {
+		// 6 paragraphs of ~1000 chars each = ~6000 chars → 2 pages at 3000/page
+		const paragraphs = [
+			{ text: 'Page1 Para1 ' + 'a'.repeat(988) },
+			{ text: 'Page1 Para2 ' + 'b'.repeat(988) },
+			{ text: 'Page1 Para3 ' + 'c'.repeat(988) },
+			{ text: 'Page2 Para4 ' + 'd'.repeat(988) },
+			{ text: 'Page2 Para5 ' + 'e'.repeat(988) },
+			{ text: 'Page2 Para6 ' + 'f'.repeat(988) }
+		];
+		return makeDoc(paragraphs);
+	}
+
+	it('returns full document when no page options set', () => {
+		const doc = makeMultiPageDoc();
+		const result = transformWithPageFilter(doc, []);
+		expect(result.markdown).toContain('Page1 Para1');
+		expect(result.markdown).toContain('Page2 Para6');
+		expect(result.totalPages).toBe(2);
+		expect(result.pageRange).toBeNull();
+	});
+
+	it('filters to requested page range', () => {
+		const doc = makeMultiPageDoc();
+		const result = transformWithPageFilter(doc, [], { startPage: 1, pageCount: 1 });
+		expect(result.markdown).toContain('Page1 Para1');
+		expect(result.markdown).not.toContain('Page2 Para4');
+		expect(result.pageRange).toEqual({ start: 1, end: 1 });
+		expect(result.totalPages).toBe(2);
+	});
+
+	it('filters comments to only those in the page range', () => {
+		const doc = makeMultiPageDoc();
+		const threads: CommentThread[] = [
+			{
+				id: '1', anchorId: 'c1', quotedText: 'Page1 Para1', resolved: false,
+				comments: [{ authorName: 'A', authorEmail: 'a@t.com', content: 'On page 1', isReply: false }]
+			},
+			{
+				id: '2', anchorId: 'c2', quotedText: 'Page2 Para4', resolved: false,
+				comments: [{ authorName: 'B', authorEmail: 'b@t.com', content: 'On page 2', isReply: false }]
+			}
+		];
+		const result = transformWithPageFilter(doc, threads, { startPage: 1, pageCount: 1 });
+		expect(result.markdown).toContain('[Page1 Para1]^[c1]');
+		expect(result.markdown).not.toContain('Page2 Para4');
+		expect(result.commentCount).toBe(1);
+	});
+
+	it('renumbers comment IDs sequentially in filtered output', () => {
+		const doc = makeMultiPageDoc();
+		const threads: CommentThread[] = [
+			{
+				id: '1', anchorId: 'c1', quotedText: 'Page1 Para1', resolved: false,
+				comments: [{ authorName: 'A', authorEmail: 'a@t.com', content: 'First', isReply: false }]
+			},
+			{
+				id: '2', anchorId: 'c2', quotedText: 'Page2 Para4', resolved: false,
+				comments: [{ authorName: 'B', authorEmail: 'b@t.com', content: 'Second', isReply: false }]
+			},
+			{
+				id: '3', anchorId: 'c3', quotedText: 'Page2 Para5', resolved: false,
+				comments: [{ authorName: 'C', authorEmail: 'c@t.com', content: 'Third', isReply: false }]
+			}
+		];
+		// Page 2 only — should get c2 and c3, renumbered to c1 and c2
+		const result = transformWithPageFilter(doc, threads, { startPage: 2, pageCount: 1 });
+		expect(result.markdown).toContain(']^[c1]');
+		expect(result.markdown).toContain(']^[c2]');
+		expect(result.markdown).not.toContain(']^[c3]');
+		expect(result.commentCount).toBe(2);
+	});
+
+	it('returns correct metadata', () => {
+		const doc = makeMultiPageDoc();
+		const result = transformWithPageFilter(doc, [], { startPage: 2 });
+		expect(result.totalPages).toBe(2);
+		expect(result.pageRange).toEqual({ start: 2, end: 2 });
 	});
 });

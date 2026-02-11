@@ -11,8 +11,10 @@ import type {
 	Paragraph,
 	ParagraphElement,
 	CommentThread,
-	TextStyle
+	TextStyle,
+	StructuralElement
 } from '$lib/types/google';
+import { filterByPageRange, filterAndRenumberThreads } from '$lib/utils/pagination';
 
 /** Map Google Docs heading styles to markdown prefix */
 const HEADING_MAP: Record<string, string> = {
@@ -249,6 +251,76 @@ export function transformToMarkdown(
 	result = result.trimEnd() + '\n';
 
 	return result;
+}
+
+export interface TransformOptions {
+	startPage?: number;
+	pageCount?: number;
+	charsPerPage?: number;
+}
+
+export interface TransformResult {
+	markdown: string;
+	totalPages: number;
+	pageRange: { start: number; end: number } | null;
+	commentCount: number;
+}
+
+/**
+ * Transform with optional page-range filtering.
+ * When startPage > 1 or pageCount is set, filters elements and comments
+ * to the requested page range and renumbers comment anchors sequentially.
+ */
+export function transformWithPageFilter(
+	doc: GoogleDocsDocument,
+	threads: CommentThread[],
+	options?: TransformOptions
+): TransformResult {
+	const isFiltering = options && (
+		(options.startPage !== undefined && options.startPage > 1) ||
+		options.pageCount !== undefined
+	);
+
+	if (!isFiltering) {
+		// No filtering — estimate pages for metadata but use full doc
+		const { totalPages } = filterByPageRange(
+			doc.body.content,
+			1,
+			undefined,
+			options?.charsPerPage
+		);
+		const markdown = transformToMarkdown(doc, threads);
+		return {
+			markdown,
+			totalPages,
+			pageRange: null,
+			commentCount: threads.filter((t) => t.quotedText).length
+		};
+	}
+
+	const startPage = options.startPage ?? 1;
+	const { elements, totalPages, startPage: actualStart, endPage } = filterByPageRange(
+		doc.body.content,
+		startPage,
+		options.pageCount,
+		options.charsPerPage
+	);
+
+	const filteredThreads = filterAndRenumberThreads(threads, elements);
+
+	const filteredDoc: GoogleDocsDocument = {
+		...doc,
+		body: { content: elements }
+	};
+
+	const markdown = transformToMarkdown(filteredDoc, filteredThreads);
+
+	return {
+		markdown,
+		totalPages,
+		pageRange: { start: actualStart, end: endPage },
+		commentCount: filteredThreads.length
+	};
 }
 
 /**

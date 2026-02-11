@@ -63,6 +63,11 @@ export interface ParagraphElement {
 	endIndex: number;
 	textRun?: TextRun;
 	inlineObjectElement?: InlineObjectElement;
+	pageBreak?: PageBreak;
+}
+
+export interface PageBreak {
+	textStyle?: TextStyle;
 }
 
 export interface TextRun {

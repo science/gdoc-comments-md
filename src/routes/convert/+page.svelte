@@ -8,7 +8,7 @@
 	import { extractDocumentId } from '$lib/utils/url';
 	import { fetchDocument } from '$lib/services/google-docs';
 	import { fetchComments } from '$lib/services/google-drive';
-	import { transformToMarkdown, convertDriveComments } from '$lib/services/transformer';
+	import { transformToMarkdown, transformWithPageFilter, convertDriveComments } from '$lib/services/transformer';
 	import { formatRelativeTime } from '$lib/utils/time';
 
 	const auth = getAuthState();
@@ -21,6 +21,10 @@
 	let commentCount = $state(0);
 	let copied = $state(false);
 	let cachedAt = $state<number | null>(null);
+	let startPage = $state(1);
+	let pageCountInput = $state('');
+	let totalPages = $state<number | null>(null);
+	let pageRange = $state<{ start: number; end: number } | null>(null);
 
 	onMount(async () => {
 		const historyId = $page.url.searchParams.get('historyId');
@@ -66,6 +70,8 @@
 		docTitle = null;
 		commentCount = 0;
 		copied = false;
+		totalPages = null;
+		pageRange = null;
 
 		try {
 			// Fetch document and comments in parallel
@@ -75,21 +81,39 @@
 			]);
 
 			docTitle = doc.title;
-			commentCount = commentsResponse.comments?.length || 0;
 
 			// Convert Drive comments to internal format
 			const threads = convertDriveComments(commentsResponse.comments || []);
 
-			// Transform to markdown
-			markdownOutput = transformToMarkdown(doc, threads);
+			// Transform to markdown (with optional page filtering)
+			const parsedPageCount = pageCountInput ? parseInt(pageCountInput, 10) : undefined;
+			const usePageFilter = startPage > 1 || parsedPageCount !== undefined;
+
+			if (usePageFilter) {
+				const result = transformWithPageFilter(doc, threads, {
+					startPage,
+					pageCount: parsedPageCount
+				});
+				markdownOutput = result.markdown;
+				totalPages = result.totalPages;
+				pageRange = result.pageRange;
+				commentCount = result.commentCount;
+			} else {
+				const result = transformWithPageFilter(doc, threads);
+				markdownOutput = result.markdown;
+				totalPages = result.totalPages;
+				pageRange = null;
+				commentCount = threads.filter((t) => t.quotedText).length;
+			}
 			cachedAt = null;
 
-			// Save to history
+			// Save to history (always store full doc comment count)
+			const fullCommentCount = commentsResponse.comments?.length || 0;
 			addEntry({
 				docId: documentId,
 				docUrl: docUrl.trim(),
 				docTitle: doc.title,
-				commentCount,
+				commentCount: fullCommentCount,
 				convertedAt: Date.now()
 			});
 			saveMarkdown(documentId, markdownOutput);
@@ -154,6 +178,35 @@
 				/>
 			</div>
 
+			<div class="flex gap-4 items-end">
+				<div>
+					<label for="start-page" class="block text-sm font-medium text-gray-300 mb-2">
+						Start from page
+					</label>
+					<input
+						id="start-page"
+						type="number"
+						min="1"
+						bind:value={startPage}
+						class="w-28 px-4 py-2 bg-gray-900 border border-gray-600 rounded-lg focus:outline-none focus:border-blue-500 text-white"
+					/>
+				</div>
+				<div>
+					<label for="page-count" class="block text-sm font-medium text-gray-300 mb-2">
+						Number of pages
+					</label>
+					<input
+						id="page-count"
+						type="number"
+						min="1"
+						bind:value={pageCountInput}
+						placeholder="All"
+						class="w-28 px-4 py-2 bg-gray-900 border border-gray-600 rounded-lg focus:outline-none focus:border-blue-500 text-white placeholder-gray-500"
+					/>
+				</div>
+				<p class="text-xs text-gray-500 pb-2">Pages are approximate (~3000 characters each)</p>
+			</div>
+
 			{#if error}
 				<div class="bg-red-900/50 border border-red-700 rounded p-3 text-red-200 text-sm">
 					{error}
@@ -175,7 +228,15 @@
 			<div class="flex items-center justify-between flex-wrap gap-4">
 				<div>
 					<h2 class="text-lg font-semibold">{docTitle}</h2>
-					<p class="text-sm text-gray-400">{commentCount} comment{commentCount !== 1 ? 's' : ''} found</p>
+					<p class="text-sm text-gray-400">
+					{commentCount} comment{commentCount !== 1 ? 's' : ''} found{#if totalPages}
+						{#if pageRange}
+							&middot; Showing pages {pageRange.start}–{pageRange.end} of ~{totalPages} estimated
+						{:else}
+							&middot; ~{totalPages} estimated page{totalPages !== 1 ? 's' : ''}
+						{/if}
+					{/if}
+				</p>
 					{#if cachedAt}
 						<p class="text-sm text-yellow-400 mt-1" data-testid="cached-indicator">
 							Cached from {formatRelativeTime(cachedAt)}
