@@ -25,6 +25,7 @@
 	let pageCountInput = $state('');
 	let totalPages = $state<number | null>(null);
 	let pageRange = $state<{ start: number; end: number } | null>(null);
+	let wrapLines = $state(false);
 
 	onMount(async () => {
 		const historyId = $page.url.searchParams.get('historyId');
@@ -266,7 +267,16 @@
 					</button>
 				</div>
 			</div>
-			<pre class="bg-gray-900 p-4 rounded text-sm overflow-x-auto max-h-[500px] overflow-y-auto"><code class="text-gray-300">{markdownOutput}</code></pre>
+			<label class="flex items-center gap-2 text-sm text-gray-400">
+				<input
+					type="checkbox"
+					bind:checked={wrapLines}
+					data-testid="wrap-toggle"
+					class="accent-blue-500"
+				/>
+				Wrap lines to window
+			</label>
+			<pre class="bg-gray-900 p-4 rounded text-sm max-h-[500px] overflow-y-auto {wrapLines ? 'whitespace-pre-wrap break-words' : 'overflow-x-auto'}"><code class="text-gray-300">{markdownOutput}</code></pre>
 		</div>
 	{/if}
 </div>
