@@ -279,6 +279,55 @@ describe('transformToMarkdown - comments', () => {
 		expect(result).toContain('[some]^[c1]');
 	});
 
+	it('numbers comments by document position, not API order', () => {
+		const doc = makeDoc([
+			{ text: 'First paragraph with wordA in it.' },
+			{ text: 'Second paragraph with wordB in it.' }
+		]);
+		// API returns comments in reverse order (wordB created first, wordA second)
+		const threads: CommentThread[] = [
+			{
+				id: 'api-first', anchorId: 'c1', quotedText: 'wordB', resolved: false,
+				comments: [{ authorName: 'Bob', authorEmail: 'b@t.com', content: 'On B', isReply: false }]
+			},
+			{
+				id: 'api-second', anchorId: 'c2', quotedText: 'wordA', resolved: false,
+				comments: [{ authorName: 'Alice', authorEmail: 'a@t.com', content: 'On A', isReply: false }]
+			}
+		];
+		const result = transformToMarkdown(doc, threads);
+		// wordA appears first in document, so should be c1
+		expect(result).toContain('[wordA]^[c1]');
+		// wordB appears second in document, so should be c2
+		expect(result).toContain('[wordB]^[c2]');
+	});
+
+	it('does not duplicate comment when quoted text appears in multiple paragraphs', () => {
+		const doc = makeDoc([
+			{ text: 'First paragraph mentions surrender here.' },
+			{ text: 'Second paragraph also says surrender again.' }
+		]);
+		const threads: CommentThread[] = [
+			{
+				id: '1', anchorId: 'c1', quotedText: 'surrender', resolved: false,
+				comments: [{ authorName: 'Alice', authorEmail: 'a@t.com', content: 'What does this mean?', isReply: false }]
+			}
+		];
+		const result = transformToMarkdown(doc, threads);
+		// Should only appear once as an anchor
+		const anchorMatches = result.match(/\]?\^\[c1\]/g) || [];
+		expect(anchorMatches).toHaveLength(1);
+		// Should only appear once as a blockquote
+		const blockquoteMatches = result.match(/> \[c1\] \*\*Alice\*\*/g) || [];
+		expect(blockquoteMatches).toHaveLength(1);
+		// First paragraph should have the anchor
+		expect(result).toContain('[surrender]^[c1]');
+		// Second paragraph should NOT have the anchor
+		const lines = result.split('\n');
+		const secondParaLine = lines.find(l => l.includes('Second paragraph'));
+		expect(secondParaLine).not.toContain('^[c1]');
+	});
+
 	it('places comment threads after their paragraph', () => {
 		const doc = makeDoc([{ text: 'Here is some text.' }]);
 		const threads: CommentThread[] = [

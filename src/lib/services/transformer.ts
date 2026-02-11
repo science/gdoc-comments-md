@@ -142,12 +142,56 @@ function insertAnchors(text: string, threads: CommentThread[]): string {
 }
 
 /**
+ * Renumber threads sequentially by their first appearance in the document.
+ * Threads are ordered by which paragraph they first match (document position),
+ * not by their API/creation order.
+ */
+function renumberByDocumentOrder(
+	doc: GoogleDocsDocument,
+	threads: CommentThread[]
+): CommentThread[] {
+	const seen = new Set<string>();
+	const ordered: CommentThread[] = [];
+
+	for (const element of doc.body.content) {
+		if (!element.paragraph) continue;
+		const rawText = extractTextContent(element.paragraph.elements);
+		const textContent = rawText.replace(/\n$/, '');
+		if (!textContent.trim()) continue;
+
+		for (const thread of threads) {
+			if (seen.has(thread.id)) continue;
+			if (thread.quotedText && textContent.includes(thread.quotedText)) {
+				seen.add(thread.id);
+				ordered.push(thread);
+			}
+		}
+	}
+
+	// Include any threads that didn't match any paragraph (e.g. no quotedText)
+	for (const thread of threads) {
+		if (!seen.has(thread.id)) {
+			ordered.push(thread);
+		}
+	}
+
+	return ordered.map((thread, index) => ({
+		...thread,
+		anchorId: `c${index + 1}`
+	}));
+}
+
+/**
  * Transform Google Docs document and comments to markdown
  */
 export function transformToMarkdown(
 	doc: GoogleDocsDocument,
 	threads: CommentThread[]
 ): string {
+	// Renumber threads by document position order
+	const orderedThreads = renumberByDocumentOrder(doc, threads);
+	const matchedThreadIds = new Set<string>();
+
 	const lines: string[] = [];
 
 	// Check if any paragraph has TITLE style - if so, don't add doc.title separately
@@ -206,10 +250,16 @@ export function transformToMarkdown(
 			line = textContent;
 		}
 
-		// Find threads that reference text in this paragraph
-		const matchingThreads = threads.filter(
-			(thread) => thread.quotedText && textContent.includes(thread.quotedText)
+		// Find threads that reference text in this paragraph (skip already-matched)
+		const matchingThreads = orderedThreads.filter(
+			(thread) => !matchedThreadIds.has(thread.id) &&
+				thread.quotedText && textContent.includes(thread.quotedText)
 		);
+
+		// Mark these threads as matched so they won't duplicate
+		for (const thread of matchingThreads) {
+			matchedThreadIds.add(thread.id);
+		}
 
 		// Insert anchor markers
 		if (matchingThreads.length > 0) {
