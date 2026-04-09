@@ -141,4 +141,28 @@ describe('convertDriveComments', () => {
 	it('returns empty array for empty input', () => {
 		expect(convertDriveComments([])).toEqual([]);
 	});
+
+	it('decodes HTML entities in quotedFileContent', () => {
+		const comments = [{
+			id: 'A', content: 'Comment', resolved: false,
+			quotedFileContent: { value: 'I&#39;m saying &quot;hello&quot; &amp; goodbye' },
+			author: { displayName: 'A', emailAddress: 'a@t.com' },
+			replies: []
+		}];
+
+		const result = convertDriveComments(comments);
+		expect(result[0].quotedText).toBe('I\'m saying "hello" & goodbye');
+	});
+
+	it('decodes numeric HTML entities in quotedFileContent', () => {
+		const comments = [{
+			id: 'A', content: 'Comment', resolved: false,
+			quotedFileContent: { value: 'em&#8212;dash and &#169; symbol' },
+			author: { displayName: 'A', emailAddress: 'a@t.com' },
+			replies: []
+		}];
+
+		const result = convertDriveComments(comments);
+		expect(result[0].quotedText).toBe('em\u2014dash and \u00A9 symbol');
+	});
 });

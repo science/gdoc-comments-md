@@ -14,20 +14,32 @@ export async function fetchComments(
 	documentId: string,
 	accessToken: string
 ): Promise<DriveCommentsResponse> {
-	const url = `${DRIVE_API_BASE}/${documentId}/comments?fields=*`;
+	const allComments: DriveCommentsResponse['comments'] = [];
+	let pageToken: string | undefined;
 
-	const response = await fetch(url, {
-		headers: {
-			Authorization: `Bearer ${accessToken}`
+	do {
+		const url = new URL(`${DRIVE_API_BASE}/${documentId}/comments`);
+		url.searchParams.set('fields', '*');
+		url.searchParams.set('pageSize', '100');
+		if (pageToken) url.searchParams.set('pageToken', pageToken);
+
+		const response = await fetch(url.toString(), {
+			headers: {
+				Authorization: `Bearer ${accessToken}`
+			}
+		});
+
+		if (!response.ok) {
+			const error = await response.json().catch(() => ({}));
+			throw new Error(
+				error.error?.message || `Failed to fetch comments: HTTP ${response.status}`
+			);
 		}
-	});
 
-	if (!response.ok) {
-		const error = await response.json().catch(() => ({}));
-		throw new Error(
-			error.error?.message || `Failed to fetch comments: HTTP ${response.status}`
-		);
-	}
+		const data: DriveCommentsResponse = await response.json();
+		allComments.push(...(data.comments || []));
+		pageToken = data.nextPageToken;
+	} while (pageToken);
 
-	return response.json();
+	return { kind: 'drive#commentList', comments: allComments };
 }

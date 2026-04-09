@@ -374,6 +374,20 @@ export function transformWithPageFilter(
 }
 
 /**
+ * Decode HTML entities that the Drive API returns in quotedFileContent.
+ * The Docs API returns plain text, so we must decode to match.
+ */
+function decodeHtmlEntities(str: string): string {
+	return str
+		.replace(/&#39;/g, "'")
+		.replace(/&quot;/g, '"')
+		.replace(/&amp;/g, '&')
+		.replace(/&lt;/g, '<')
+		.replace(/&gt;/g, '>')
+		.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n)));
+}
+
+/**
  * Convert Drive API comments to internal CommentThread format
  */
 export function convertDriveComments(
@@ -394,7 +408,9 @@ export function convertDriveComments(
 		.map((comment, index) => ({
 			id: comment.id,
 			anchorId: `c${index + 1}`,
-			quotedText: comment.quotedFileContent?.value || '',
+			quotedText: comment.quotedFileContent?.value
+				? decodeHtmlEntities(comment.quotedFileContent.value)
+				: '',
 			resolved: comment.resolved,
 			comments: [
 				{
