@@ -38,6 +38,49 @@ describe('extractTextContent', () => {
 		expect(extractTextContent(elements)).toBe('**_Hello_**');
 	});
 
+	it('applies strikethrough formatting', () => {
+		const elements = [
+			{ startIndex: 0, endIndex: 5, textRun: { content: 'Hello', textStyle: { strikethrough: true } } }
+		];
+		expect(extractTextContent(elements)).toBe('~~Hello~~');
+	});
+
+	it('applies strikethrough combined with bold', () => {
+		const elements = [
+			{
+				startIndex: 0,
+				endIndex: 5,
+				textRun: { content: 'Hello', textStyle: { bold: true, strikethrough: true } }
+			}
+		];
+		expect(extractTextContent(elements)).toBe('**~~Hello~~**');
+	});
+
+	it('applies strikethrough combined with italic', () => {
+		const elements = [
+			{
+				startIndex: 0,
+				endIndex: 5,
+				textRun: { content: 'Hello', textStyle: { italic: true, strikethrough: true } }
+			}
+		];
+		expect(extractTextContent(elements)).toBe('_~~Hello~~_');
+	});
+
+	it('applies bold, italic, and strikethrough together', () => {
+		const elements = [
+			{
+				startIndex: 0,
+				endIndex: 5,
+				textRun: {
+					content: 'Hello',
+					textStyle: { bold: true, italic: true, strikethrough: true }
+				}
+			}
+		];
+		expect(extractTextContent(elements)).toBe('**_~~Hello~~_**');
+	});
+
 	it('handles links', () => {
 		const elements = [
 			{ startIndex: 0, endIndex: 5, textRun: { content: 'Click', textStyle: { link: { url: 'https://example.com' } } } }

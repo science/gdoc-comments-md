@@ -57,7 +57,10 @@ function applyTextStyle(text: string, style: TextStyle): string {
 		return text;
 	}
 
-	// Apply formatting - order matters: bold wraps italic
+	// Apply formatting - order matters (inner → outer): ~~ → _ → **
+	if (style.strikethrough) {
+		text = `~~${text}~~`;
+	}
 	if (style.italic) {
 		text = `_${text}_`;
 	}
