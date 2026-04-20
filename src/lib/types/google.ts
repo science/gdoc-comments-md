@@ -123,6 +123,17 @@ export interface TableOfContents {
 }
 
 /**
+ * Google Drive API file metadata
+ * https://developers.google.com/drive/api/v3/reference/files
+ */
+
+export interface DriveFileMetadata {
+	id: string;
+	name: string;
+	mimeType: string;
+}
+
+/**
  * Google Drive API comment types
  * https://developers.google.com/drive/api/v3/reference/comments
  */

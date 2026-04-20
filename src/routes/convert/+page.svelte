@@ -7,7 +7,12 @@
 	import { saveMarkdown, getMarkdown } from '$lib/services/markdown-storage';
 	import { extractDocumentId } from '$lib/utils/url';
 	import { fetchDocument } from '$lib/services/google-docs';
-	import { fetchComments } from '$lib/services/google-drive';
+	import {
+		fetchComments,
+		fetchFileMetadata,
+		isNativeGoogleDoc,
+		describeNonNativeFile
+	} from '$lib/services/google-drive';
 	import { transformToMarkdown, transformWithPageFilter, convertDriveComments } from '$lib/services/transformer';
 	import { formatRelativeTime } from '$lib/utils/time';
 
@@ -75,6 +80,14 @@
 		pageRange = null;
 
 		try {
+			// Preflight: confirm this is a native Google Doc. The Docs API only
+			// works on native docs and returns an opaque "This operation is not
+			// supported for this document" error for Word/PDF/etc.
+			const metadata = await fetchFileMetadata(documentId, auth.accessToken);
+			if (!isNativeGoogleDoc(metadata.mimeType)) {
+				throw new Error(describeNonNativeFile(metadata));
+			}
+
 			// Fetch document and comments in parallel
 			const [doc, commentsResponse] = await Promise.all([
 				fetchDocument(documentId, auth.accessToken),
