@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { estimatePages, filterByPageRange, filterAndRenumberThreads } from '$lib/utils/pagination';
-import type { StructuralElement, CommentThread } from '$lib/types/google';
+import {
+	estimatePages,
+	filterByPageRange,
+	truncateByPageRange
+} from '$lib/utils/pagination';
+import type { StructuralElement, CommentThread, GoogleDocsDocument } from '$lib/types/google';
 
 // Helper to build structural elements with paragraph text
 function makeElements(texts: string[]): StructuralElement[] {
@@ -160,8 +164,8 @@ describe('filterByPageRange', () => {
 	});
 });
 
-describe('filterAndRenumberThreads', () => {
-	function makeThread(id: string, anchorId: string, quotedText: string): CommentThread {
+describe('truncateByPageRange', () => {
+	function baseThread(id: string, anchorId: string, quotedText: string): CommentThread {
 		return {
 			id,
 			anchorId,
@@ -173,61 +177,91 @@ describe('filterAndRenumberThreads', () => {
 		};
 	}
 
-	it('keeps threads whose quotedText appears in filtered elements', () => {
-		const elements = makeElements(['Hello world', 'Goodbye world']);
-		const threads = [
-			makeThread('1', 'c1', 'Hello'),
-			makeThread('2', 'c2', 'Goodbye')
+	function docWithElements(elements: StructuralElement[]): GoogleDocsDocument {
+		return {
+			documentId: 'test',
+			title: 'Test',
+			body: { content: elements }
+		};
+	}
+
+	it('drops a thread whose anchorParaIndex is outside the kept slice even when its quotedText appears inside it', () => {
+		// The central bug: "Sophia" appears in paragraph 0 (kept) but a thread
+		// anchored at paragraph 2 (dropped) shouldn't be rehomed onto the
+		// earlier occurrence by substring fallback.
+		const elements = makeElements([
+			'Page1 Heading contains Sophia',
+			'filler body ' + 'a'.repeat(2985),
+			'Page2 body mentioning Sophia deep in doc'
+		]);
+		const doc = docWithElements(elements);
+		const threads: CommentThread[] = [
+			{ ...baseThread('1', 'c1', 'Sophia'), anchorParaIndex: 2 }
 		];
-		const result = filterAndRenumberThreads(threads, elements);
-		expect(result).toHaveLength(2);
+		const out = truncateByPageRange(doc, threads, 1, 1);
+		expect(out.threads).toHaveLength(0);
 	});
 
-	it('removes threads whose quotedText does not appear in filtered elements', () => {
-		const elements = makeElements(['Hello world']);
-		const threads = [
-			makeThread('1', 'c1', 'Hello'),
-			makeThread('2', 'c2', 'Missing text')
+	it('keeps in-range threads and preserves anchorParaIndex when the kept slice starts at index 0', () => {
+		const elements = makeElements(['alpha', 'beta', 'gamma']);
+		const doc = docWithElements(elements);
+		const threads: CommentThread[] = [
+			{ ...baseThread('1', 'c1', 'gamma'), anchorParaIndex: 2 }
 		];
-		const result = filterAndRenumberThreads(threads, elements);
-		expect(result).toHaveLength(1);
-		expect(result[0].quotedText).toBe('Hello');
+		const out = truncateByPageRange(doc, threads, 1, undefined);
+		expect(out.threads).toHaveLength(1);
+		expect(out.threads[0].anchorParaIndex).toBe(2);
+		expect(out.doc.body.content).toHaveLength(3);
 	});
 
-	it('renumbers anchor IDs sequentially starting from c1', () => {
-		const elements = makeElements(['Alpha Beta Gamma']);
-		const threads = [
-			makeThread('1', 'c5', 'Alpha'),
-			makeThread('2', 'c10', 'Gamma')
+	it('returns metadata matching the kept page range', () => {
+		const elements = makeElements(['a'.repeat(2990), 'b'.repeat(2990), 'c'.repeat(2990)]);
+		const doc = docWithElements(elements);
+		const out = truncateByPageRange(doc, [], 1, 2);
+		expect(out.totalPages).toBe(3);
+		expect(out.pageRange.start).toBe(1);
+		expect(out.pageRange.end).toBe(2);
+	});
+
+	it('renumbers anchorIds sequentially starting from c1 after truncation', () => {
+		const elements = makeElements(['alpha beta', 'gamma delta']);
+		const doc = docWithElements(elements);
+		const threads: CommentThread[] = [
+			{ ...baseThread('1', 'c5', 'alpha'), anchorParaIndex: 0 },
+			{ ...baseThread('2', 'c10', 'delta'), anchorParaIndex: 1 }
 		];
-		const result = filterAndRenumberThreads(threads, elements);
-		expect(result).toHaveLength(2);
-		expect(result[0].anchorId).toBe('c1');
-		expect(result[1].anchorId).toBe('c2');
+		const out = truncateByPageRange(doc, threads, 1, undefined);
+		expect(out.threads.map((t) => t.anchorId)).toEqual(['c1', 'c2']);
 	});
 
-	it('returns empty array when no threads match', () => {
-		const elements = makeElements(['Hello world']);
-		const threads = [makeThread('1', 'c1', 'No match here')];
-		const result = filterAndRenumberThreads(threads, elements);
-		expect(result).toHaveLength(0);
-	});
-
-	it('returns empty array for empty elements', () => {
-		const threads = [makeThread('1', 'c1', 'Some text')];
-		const result = filterAndRenumberThreads(threads, []);
-		expect(result).toHaveLength(0);
-	});
-
-	it('handles threads with empty quotedText by excluding them', () => {
-		const elements = makeElements(['Hello world']);
-		const threads = [
-			makeThread('1', 'c1', ''),
-			makeThread('2', 'c2', 'Hello')
+	it('excludes threads with empty quotedText', () => {
+		// A kept-range thread with no quoted content can't anchor anywhere;
+		// the upstream transformer renders these in "## Unanchored comments"
+		// when it encounters them directly, but the truncate step should not
+		// surface them as kept threads.
+		const elements = makeElements(['hello']);
+		const doc = docWithElements(elements);
+		const threads: CommentThread[] = [
+			{ ...baseThread('1', 'c1', ''), anchorParaIndex: 0 },
+			{ ...baseThread('2', 'c2', 'hello'), anchorParaIndex: 0 }
 		];
-		const result = filterAndRenumberThreads(threads, elements);
-		expect(result).toHaveLength(1);
-		expect(result[0].anchorId).toBe('c1');
-		expect(result[0].quotedText).toBe('Hello');
+		const out = truncateByPageRange(doc, threads, 1, undefined);
+		expect(out.threads).toHaveLength(1);
+		expect(out.threads[0].quotedText).toBe('hello');
+	});
+
+	it('falls back to substring match for legacy threads with no anchorParaIndex', () => {
+		// Synthetic threads (unit tests, pre-adapter callers) that lack a
+		// paraIndex still survive via the fullText substring rule — but
+		// adapter-sourced threads always have paraIndex so they bypass this.
+		const elements = makeElements(['apples', 'oranges']);
+		const doc = docWithElements(elements);
+		const threads: CommentThread[] = [
+			baseThread('1', 'c1', 'apples'),
+			baseThread('2', 'c2', 'not-in-doc')
+		];
+		const out = truncateByPageRange(doc, threads, 1, undefined);
+		expect(out.threads).toHaveLength(1);
+		expect(out.threads[0].quotedText).toBe('apples');
 	});
 });

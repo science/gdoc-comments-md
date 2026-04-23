@@ -9,7 +9,16 @@ dist/
 # Environment files
 .env
 .env.*
+env.local
 !.env.example
+
+# Local sample / test documents (never commit real docs)
+*.docx
+
+# Files the user explicitly marked "gitignore" by filename (bug reports,
+# scratch notes, etc.). Keeps private material out of the repo even if
+# it lives at paths git would otherwise track.
+gitignore-*
 
 # Google OAuth credentials
 client_secret_*.json

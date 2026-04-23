@@ -392,6 +392,129 @@ describe('transformToMarkdown - comments', () => {
 	});
 });
 
+describe('transformToMarkdown - anchors never stack inside prior anchors', () => {
+	it('does not re-match inside an already-inserted anchor when quotedText is a substring', () => {
+		// Two threads: one quoting "Steve", the other "Steve: ". The longer
+		// one claims the position; the shorter should NOT then match the
+		// "Steve" literal *inside* the longer one's annotation.
+		const doc = makeDoc([{ text: 'Sophia & Steve: hello' }]);
+		const threads: CommentThread[] = [
+			{
+				id: '1', anchorId: 'c1', quotedText: 'Steve', resolved: false,
+				comments: [{ authorName: 'A', authorEmail: '', content: 'on Steve', isReply: false }]
+			},
+			{
+				id: '2', anchorId: 'c2', quotedText: 'Steve: ', resolved: false,
+				comments: [{ authorName: 'B', authorEmail: '', content: 'on Steve:', isReply: false }]
+			}
+		];
+		const result = transformToMarkdown(doc, threads);
+		// No nested anchors anywhere in the output.
+		expect(result).not.toMatch(/\[\[.*?\]\^\[c\d+\].*?\]\^\[c\d+\]/);
+	});
+
+	it('splits distinct threads onto distinct occurrences when quotedText repeats', () => {
+		// "abc" appears three times. Three threads each quoting "abc" should
+		// land on three separate occurrences, not all stack on the first.
+		const doc = makeDoc([{ text: 'abc abc abc' }]);
+		const threads: CommentThread[] = [
+			{
+				id: '1', anchorId: 'c1', quotedText: 'abc', resolved: false,
+				comments: [{ authorName: 'A', authorEmail: '', content: 'first', isReply: false }]
+			},
+			{
+				id: '2', anchorId: 'c2', quotedText: 'abc', resolved: false,
+				comments: [{ authorName: 'B', authorEmail: '', content: 'second', isReply: false }]
+			},
+			{
+				id: '3', anchorId: 'c3', quotedText: 'abc', resolved: false,
+				comments: [{ authorName: 'C', authorEmail: '', content: 'third', isReply: false }]
+			}
+		];
+		const result = transformToMarkdown(doc, threads);
+		// Three anchors side-by-side, none nested.
+		const anchorMatches = result.match(/\[abc\]\^\[c\d+\]/g) ?? [];
+		expect(anchorMatches).toHaveLength(3);
+		expect(result).not.toMatch(/\[\[abc/);
+	});
+
+	it('places an anchor in the paragraph identified by thread.anchorParaIndex, not the first substring match', () => {
+		// The docx adapter records the paragraph index where a comment's
+		// <w:commentRangeStart> was seen. The transformer must route the
+		// thread to THAT paragraph even when an earlier paragraph happens to
+		// contain the quotedText as a substring — that false-positive is the
+		// bug that silently attached deep-in-doc comments to the title bar.
+		const doc = makeDoc([
+			{ text: 'Sophia & Steve: heading' }, // paragraph 0: contains "Sophia"
+			{ text: 'unrelated middle paragraph' },
+			{ text: 'later mention of Sophia here' } // paragraph 2: real anchor
+		]);
+		const threads: CommentThread[] = [
+			{
+				id: '1',
+				anchorId: 'c1',
+				quotedText: 'Sophia',
+				resolved: false,
+				comments: [
+					{ authorName: 'Alice', authorEmail: '', content: 'a comment', isReply: false }
+				],
+				anchorParaIndex: 2
+			}
+		];
+		const result = transformToMarkdown(doc, threads);
+		// Paragraph 0 ("Sophia & Steve: heading") must NOT have the anchor.
+		expect(result).not.toMatch(/Sophia & Steve:.*\^\[c1\]/);
+		// Paragraph 2 must have the anchor.
+		expect(result).toContain('later mention of [Sophia]^[c1] here');
+	});
+
+	it('falls back to substring matching when anchorParaIndex is undefined', () => {
+		// Unit-test and pre-adapter code paths may not have paragraph-index
+		// info. Preserve the old substring-scan behavior in that case so
+		// existing tests / history-cached threads keep working.
+		const doc = makeDoc([
+			{ text: 'Hello world' },
+			{ text: 'Second paragraph' }
+		]);
+		const threads: CommentThread[] = [
+			{
+				id: '1',
+				anchorId: 'c1',
+				quotedText: 'Hello',
+				resolved: false,
+				comments: [
+					{ authorName: 'Alice', authorEmail: '', content: 'test', isReply: false }
+				]
+				// no anchorParaIndex
+			}
+		];
+		const result = transformToMarkdown(doc, threads);
+		expect(result).toContain('[Hello]^[c1] world');
+	});
+
+	it('falls back to the unanchored section when no non-overlapping position is available', () => {
+		// Only one "abc" in the text, two threads both quote "abc". The
+		// longer-or-first thread claims it; the other has no place to land
+		// and should render in the unanchored section instead of stacking.
+		const doc = makeDoc([{ text: 'abc' }]);
+		const threads: CommentThread[] = [
+			{
+				id: '1', anchorId: 'c1', quotedText: 'abc', resolved: false,
+				comments: [{ authorName: 'A', authorEmail: '', content: 'alpha', isReply: false }]
+			},
+			{
+				id: '2', anchorId: 'c2', quotedText: 'abc', resolved: false,
+				comments: [{ authorName: 'B', authorEmail: '', content: 'beta', isReply: false }]
+			}
+		];
+		const result = transformToMarkdown(doc, threads);
+		expect(result).toContain('[abc]^[c1]');
+		expect(result).not.toMatch(/\[\[abc/);
+		expect(result).toContain('## Unanchored comments');
+		expect(result).toContain('beta');
+	});
+});
+
 describe('transformWithPageFilter', () => {
 	// Build a doc with enough text to span multiple pages
 	function makeMultiPageDoc(): GoogleDocsDocument {
@@ -472,5 +595,111 @@ describe('transformWithPageFilter', () => {
 		const result = transformWithPageFilter(doc, [], { startPage: 2 });
 		expect(result.totalPages).toBe(2);
 		expect(result.pageRange).toEqual({ start: 2, end: 2 });
+	});
+
+	it('does not leak out-of-range thread anchors onto earlier paragraphs when the quoted word coincidentally appears in-range', () => {
+		// Regression guard for the "title anchor ghost" class: a thread
+		// whose true anchor is on page 2 must not rehome onto a page-1
+		// paragraph that happens to contain the same quoted word.
+		const doc = makeMultiPageDoc();
+		const threads: CommentThread[] = [
+			{
+				id: '1',
+				anchorId: 'c1',
+				quotedText: 'Page1 Para1',
+				resolved: false,
+				comments: [
+					{ authorName: 'A', authorEmail: '', content: 'late comment', isReply: false }
+				],
+				anchorParaIndex: 3 // paragraph index of 'Page2 Para4' — out of page 1
+			}
+		];
+		const result = transformWithPageFilter(doc, threads, { startPage: 1, pageCount: 1 });
+		expect(result.markdown).not.toContain(']^[c1]');
+		expect(result.markdown).not.toContain('late comment');
+		expect(result.commentCount).toBe(0);
+	});
+});
+
+describe('transformToMarkdown - unanchored comments section', () => {
+	it('renders a "## Unanchored comments" section for threads whose quotedText is empty', () => {
+		const doc = makeDoc([{ text: 'Hello world.' }]);
+		const threads: CommentThread[] = [
+			{
+				id: '1',
+				anchorId: 'c1',
+				quotedText: '', // no anchor — could not be matched in source
+				resolved: false,
+				comments: [
+					{ authorName: 'Alice', authorEmail: 'a@t.com', content: 'Point comment', isReply: false }
+				]
+			}
+		];
+		const result = transformToMarkdown(doc, threads);
+		expect(result).toContain('## Unanchored comments');
+		expect(result).toContain('> [c1] **Alice**');
+		expect(result).toContain('> Point comment');
+	});
+
+	it('renders a "## Unanchored comments" section when quotedText cannot be found in any paragraph', () => {
+		const doc = makeDoc([{ text: 'Hello world.' }]);
+		const threads: CommentThread[] = [
+			{
+				id: '1',
+				anchorId: 'c1',
+				quotedText: 'text that does not appear in the document',
+				resolved: false,
+				comments: [
+					{ authorName: 'Bob', authorEmail: 'b@t.com', content: 'Stale reference', isReply: false }
+				]
+			}
+		];
+		const result = transformToMarkdown(doc, threads);
+		expect(result).toContain('## Unanchored comments');
+		expect(result).toContain('> [c1] **Bob**');
+	});
+
+	it('omits the section entirely when every thread is anchored', () => {
+		const doc = makeDoc([{ text: 'Hello world.' }]);
+		const threads: CommentThread[] = [
+			{
+				id: '1',
+				anchorId: 'c1',
+				quotedText: 'Hello',
+				resolved: false,
+				comments: [
+					{ authorName: 'Alice', authorEmail: 'a@t.com', content: 'Anchored', isReply: false }
+				]
+			}
+		];
+		const result = transformToMarkdown(doc, threads);
+		expect(result).not.toContain('Unanchored comments');
+		expect(result).toContain('[Hello]^[c1]');
+	});
+
+	it('omits the section for an empty threads array', () => {
+		const doc = makeDoc([{ text: 'Hello.' }]);
+		const result = transformToMarkdown(doc, []);
+		expect(result).not.toContain('Unanchored comments');
+	});
+
+	it('places the section at the end of the document', () => {
+		const doc = makeDoc([{ text: 'Hello world.' }]);
+		const threads: CommentThread[] = [
+			{
+				id: '1',
+				anchorId: 'c1',
+				quotedText: '',
+				resolved: false,
+				comments: [
+					{ authorName: 'Alice', authorEmail: 'a@t.com', content: 'Dangling', isReply: false }
+				]
+			}
+		];
+		const result = transformToMarkdown(doc, threads);
+		const lines = result.split('\n');
+		const bodyIndex = lines.findIndex((l) => l.includes('Hello world.'));
+		const headingIndex = lines.findIndex((l) => l.includes('## Unanchored comments'));
+		expect(headingIndex).toBeGreaterThan(bodyIndex);
 	});
 });

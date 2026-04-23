@@ -14,7 +14,7 @@ import type {
 	TextStyle,
 	StructuralElement
 } from '$lib/types/google';
-import { filterByPageRange, filterAndRenumberThreads } from '$lib/utils/pagination';
+import { estimatePages, truncateByPageRange } from '$lib/utils/pagination';
 
 /** Map Google Docs heading styles to markdown prefix */
 const HEADING_MAP: Record<string, string> = {
@@ -115,33 +115,76 @@ export function formatCommentThread(thread: CommentThread): string {
 }
 
 /**
- * Insert anchor markers into text for commented sections
+ * Insert anchor markers into text for commented sections.
+ *
+ * Each thread claims a single non-overlapping position in the original text
+ * (longer quotedText wins first so an "x y" thread beats an "x" thread at
+ * the same start). A shorter thread whose first occurrence would nest
+ * inside an earlier claim falls through to the next occurrence; if none
+ * exists the thread returns nothing here and lands in the trailing
+ * `## Unanchored comments` section instead. This guarantees the output
+ * never produces nested `[[text]^[cA]]^[cB]` artifacts — which the regex
+ * implementation could otherwise emit when two threads' quotedTexts
+ * overlapped the same region of text.
+ *
+ * @returns `{ text, anchored }` where `anchored` is the subset of input
+ *   thread ids that actually got an inline anchor. The caller uses it to
+ *   decide whether a given thread contributes a trailing blockquote or
+ *   falls through to the unanchored section.
  */
-function insertAnchors(text: string, threads: CommentThread[]): string {
-	let result = text;
+function insertAnchors(
+	text: string,
+	threads: CommentThread[]
+): { text: string; anchored: Set<string> } {
+	interface Claim {
+		start: number;
+		end: number;
+		anchorId: string;
+	}
 
-	// Sort threads by quoted text length (longest first) to avoid partial matches
-	const sortedThreads = [...threads].sort(
+	// Process longer quotedTexts first so that at contested positions the
+	// longer one wins. `sort` is stable in modern JS, preserving the
+	// original thread order for equal-length quotes.
+	const sorted = [...threads].sort(
 		(a, b) => b.quotedText.length - a.quotedText.length
 	);
 
-	for (const thread of sortedThreads) {
-		if (!thread.quotedText) continue;
+	const claims: Claim[] = [];
+	const anchored = new Set<string>();
 
-		// Escape special regex characters in quoted text
-		const escaped = thread.quotedText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-		const regex = new RegExp(escaped, 'g');
+	for (const thread of sorted) {
+		const q = thread.quotedText;
+		if (!q) continue;
 
-		// Only replace first occurrence to handle repeated text
-		let replaced = false;
-		result = result.replace(regex, (match) => {
-			if (replaced) return match;
-			replaced = true;
-			return `[${match}]^[${thread.anchorId}]`;
-		});
+		let searchFrom = 0;
+		while (true) {
+			const pos = text.indexOf(q, searchFrom);
+			if (pos === -1) break; // no more occurrences
+			const end = pos + q.length;
+
+			const overlap = claims.find((c) => pos < c.end && end > c.start);
+			if (!overlap) {
+				claims.push({ start: pos, end, anchorId: thread.anchorId });
+				anchored.add(thread.id);
+				break;
+			}
+			// Skip past the overlapping claim and try again.
+			searchFrom = overlap.end;
+		}
 	}
 
-	return result;
+	if (claims.length === 0) return { text, anchored };
+
+	claims.sort((a, b) => a.start - b.start);
+	let out = '';
+	let cursor = 0;
+	for (const claim of claims) {
+		out += text.slice(cursor, claim.start);
+		out += `[${text.slice(claim.start, claim.end)}]^[${claim.anchorId}]`;
+		cursor = claim.end;
+	}
+	out += text.slice(cursor);
+	return { text: out, anchored };
 }
 
 /**
@@ -156,7 +199,8 @@ function renumberByDocumentOrder(
 	const seen = new Set<string>();
 	const ordered: CommentThread[] = [];
 
-	for (const element of doc.body.content) {
+	for (let i = 0; i < doc.body.content.length; i++) {
+		const element = doc.body.content[i];
 		if (!element.paragraph) continue;
 		const rawText = extractTextContent(element.paragraph.elements);
 		const textContent = rawText.replace(/\n$/, '');
@@ -164,14 +208,17 @@ function renumberByDocumentOrder(
 
 		for (const thread of threads) {
 			if (seen.has(thread.id)) continue;
-			if (thread.quotedText && textContent.includes(thread.quotedText)) {
+			if (!thread.quotedText) continue;
+			if (threadMatchesParagraph(thread, i, textContent)) {
 				seen.add(thread.id);
 				ordered.push(thread);
 			}
 		}
 	}
 
-	// Include any threads that didn't match any paragraph (e.g. no quotedText)
+	// Include any threads that didn't match any paragraph (e.g. no quotedText,
+	// or their anchorParaIndex points outside the current body — which can
+	// happen after page-range filtering).
 	for (const thread of threads) {
 		if (!seen.has(thread.id)) {
 			ordered.push(thread);
@@ -182,6 +229,32 @@ function renumberByDocumentOrder(
 		...thread,
 		anchorId: `c${index + 1}`
 	}));
+}
+
+/**
+ * Decide whether a thread belongs to the paragraph at `paragraphIndex`.
+ *
+ * When the adapter has recorded the thread's originating paragraph via
+ * `anchorParaIndex`, that is authoritative — a thread only matches its one
+ * true paragraph and nowhere else, even if its `quotedText` happens to
+ * appear as a substring earlier in the doc. When `anchorParaIndex` is
+ * absent (unit tests, old cached history entries), fall back to the
+ * historical substring-includes heuristic.
+ */
+function threadMatchesParagraph(
+	thread: CommentThread,
+	paragraphIndex: number,
+	paragraphText: string
+): boolean {
+	if (thread.anchorParaIndex !== undefined) {
+		if (thread.anchorParaIndex !== paragraphIndex) return false;
+		// Guard against a vanishing quote: if the paragraph text no longer
+		// contains our quotedText (e.g. style markup inserted a separator),
+		// the insertAnchors pass will simply fail to place it and the thread
+		// falls to the unanchored section — which is the intended behavior.
+		return paragraphText.includes(thread.quotedText);
+	}
+	return paragraphText.includes(thread.quotedText);
 }
 
 /**
@@ -209,7 +282,8 @@ export function transformToMarkdown(
 
 	let prevWasList = false;
 
-	for (const element of doc.body.content) {
+	for (let elementIndex = 0; elementIndex < doc.body.content.length; elementIndex++) {
+		const element = doc.body.content[elementIndex];
 		if (!element.paragraph) continue;
 
 		const paragraph = element.paragraph;
@@ -253,21 +327,30 @@ export function transformToMarkdown(
 			line = textContent;
 		}
 
-		// Find threads that reference text in this paragraph (skip already-matched)
-		const matchingThreads = orderedThreads.filter(
-			(thread) => !matchedThreadIds.has(thread.id) &&
-				thread.quotedText && textContent.includes(thread.quotedText)
+		// Candidate threads: belong to THIS paragraph (by recorded
+		// anchorParaIndex where available, substring fallback otherwise) AND
+		// haven't already been attached elsewhere.
+		const candidateThreads = orderedThreads.filter(
+			(thread) =>
+				!matchedThreadIds.has(thread.id) &&
+				thread.quotedText &&
+				threadMatchesParagraph(thread, elementIndex, textContent)
 		);
 
-		// Mark these threads as matched so they won't duplicate
-		for (const thread of matchingThreads) {
-			matchedThreadIds.add(thread.id);
+		// insertAnchors resolves overlapping / contested positions and reports
+		// which threads actually got an inline anchor. Only those are
+		// considered matched here; unclaimed candidates fall through to the
+		// trailing "## Unanchored comments" section so the reader still sees
+		// them instead of losing them to a silent stack.
+		let anchored = new Set<string>();
+		if (candidateThreads.length > 0) {
+			const result = insertAnchors(line, candidateThreads);
+			line = result.text;
+			anchored = result.anchored;
 		}
+		for (const id of anchored) matchedThreadIds.add(id);
 
-		// Insert anchor markers
-		if (matchingThreads.length > 0) {
-			line = insertAnchors(line, matchingThreads);
-		}
+		const placedThreads = candidateThreads.filter((t) => anchored.has(t.id));
 
 		// Add blank line before non-list paragraphs (standard markdown spacing)
 		if (!isList && prevWasList) {
@@ -279,23 +362,40 @@ export function transformToMarkdown(
 		// Regular paragraphs get followed by a blank line
 		if (!isList) {
 			// Add comment threads after the paragraph
-			if (matchingThreads.length > 0) {
+			if (placedThreads.length > 0) {
 				lines.push('');
-				for (const thread of matchingThreads) {
+				for (const thread of placedThreads) {
 					lines.push(formatCommentThread(thread));
 				}
 			}
 
 			lines.push('');
-		} else if (matchingThreads.length > 0) {
+		} else if (placedThreads.length > 0) {
 			// Comments on list items: add after the item
 			lines.push('');
-			for (const thread of matchingThreads) {
+			for (const thread of placedThreads) {
 				lines.push(formatCommentThread(thread));
 			}
 		}
 
 		prevWasList = isList;
+	}
+
+	// Append any threads that never matched a paragraph into a trailing
+	// "## Unanchored comments" section. This is a defensive safety net: when
+	// quotedText is missing (point comments, deleted anchors) or the range
+	// captured in OOXML doesn't line up with any emitted paragraph, the
+	// comment would otherwise be silently dropped. Keeping it visible in a
+	// dedicated section makes the failure loud enough to diagnose.
+	const unanchored = orderedThreads.filter((thread) => !matchedThreadIds.has(thread.id));
+	if (unanchored.length > 0) {
+		lines.push('');
+		lines.push('## Unanchored comments');
+		lines.push('');
+		for (const thread of unanchored) {
+			lines.push(formatCommentThread(thread));
+			lines.push('');
+		}
 	}
 
 	// Clean up trailing blank lines and excess whitespace
@@ -335,99 +435,33 @@ export function transformWithPageFilter(
 	);
 
 	if (!isFiltering) {
-		// No filtering — estimate pages for metadata but use full doc
-		const { totalPages } = filterByPageRange(
-			doc.body.content,
-			1,
-			undefined,
-			options?.charsPerPage
-		);
-		const markdown = transformToMarkdown(doc, threads);
+		// No filtering — estimate pages for metadata but render the full doc.
+		const totalPages = estimatePages(doc.body.content, options?.charsPerPage).length;
 		return {
-			markdown,
+			markdown: transformToMarkdown(doc, threads),
 			totalPages,
 			pageRange: null,
 			commentCount: threads.filter((t) => t.quotedText).length
 		};
 	}
 
-	const startPage = options.startPage ?? 1;
-	const { elements, totalPages, startPage: actualStart, endPage } = filterByPageRange(
-		doc.body.content,
-		startPage,
+	// Truncate the parsed doc + threads to the requested page range *before*
+	// rendering. Threads whose anchor is outside the kept slice are dropped
+	// outright — there is no substring-rescue path that could leak them onto
+	// an earlier heading.
+	const truncated = truncateByPageRange(
+		doc,
+		threads,
+		options.startPage ?? 1,
 		options.pageCount,
 		options.charsPerPage
 	);
 
-	const filteredThreads = filterAndRenumberThreads(threads, elements);
-
-	const filteredDoc: GoogleDocsDocument = {
-		...doc,
-		body: { content: elements }
-	};
-
-	const markdown = transformToMarkdown(filteredDoc, filteredThreads);
-
 	return {
-		markdown,
-		totalPages,
-		pageRange: { start: actualStart, end: endPage },
-		commentCount: filteredThreads.length
+		markdown: transformToMarkdown(truncated.doc, truncated.threads),
+		totalPages: truncated.totalPages,
+		pageRange: truncated.pageRange,
+		commentCount: truncated.threads.length
 	};
 }
 
-/**
- * Decode HTML entities that the Drive API returns in quotedFileContent.
- * The Docs API returns plain text, so we must decode to match.
- */
-function decodeHtmlEntities(str: string): string {
-	return str
-		.replace(/&#39;/g, "'")
-		.replace(/&quot;/g, '"')
-		.replace(/&amp;/g, '&')
-		.replace(/&lt;/g, '<')
-		.replace(/&gt;/g, '>')
-		.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n)));
-}
-
-/**
- * Convert Drive API comments to internal CommentThread format
- */
-export function convertDriveComments(
-	comments: Array<{
-		id: string;
-		content: string;
-		resolved: boolean;
-		quotedFileContent?: { value: string };
-		author: { displayName: string; emailAddress?: string };
-		replies: Array<{
-			content: string;
-			author: { displayName: string; emailAddress?: string };
-		}>;
-	}>
-): CommentThread[] {
-	return comments
-		.filter((comment) => !comment.resolved || comment.quotedFileContent)
-		.map((comment, index) => ({
-			id: comment.id,
-			anchorId: `c${index + 1}`,
-			quotedText: comment.quotedFileContent?.value
-				? decodeHtmlEntities(comment.quotedFileContent.value)
-				: '',
-			resolved: comment.resolved,
-			comments: [
-				{
-					authorName: comment.author.displayName,
-					authorEmail: comment.author.emailAddress || '',
-					content: comment.content,
-					isReply: false
-				},
-				...comment.replies.map((reply) => ({
-					authorName: reply.author.displayName,
-					authorEmail: reply.author.emailAddress || '',
-					content: reply.content,
-					isReply: true
-				}))
-			]
-		}));
-}

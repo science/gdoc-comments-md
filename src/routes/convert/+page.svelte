@@ -6,14 +6,14 @@
 	import { addEntry, getEntryByDocId, restoreHistory } from '$lib/stores/history.svelte';
 	import { saveMarkdown, getMarkdown } from '$lib/services/markdown-storage';
 	import { extractDocumentId } from '$lib/utils/url';
-	import { fetchDocument } from '$lib/services/google-docs';
 	import {
-		fetchComments,
 		fetchFileMetadata,
 		isNativeGoogleDoc,
 		describeNonNativeFile
 	} from '$lib/services/google-drive';
-	import { transformToMarkdown, transformWithPageFilter, convertDriveComments } from '$lib/services/transformer';
+	import { exportDocx } from '$lib/services/google-drive-export';
+	import { parseDocx } from '$lib/services/docx-adapter';
+	import { transformWithPageFilter } from '$lib/services/transformer';
 	import { formatRelativeTime } from '$lib/utils/time';
 
 	const auth = getAuthState();
@@ -80,24 +80,22 @@
 		pageRange = null;
 
 		try {
-			// Preflight: confirm this is a native Google Doc. The Docs API only
-			// works on native docs and returns an opaque "This operation is not
-			// supported for this document" error for Word/PDF/etc.
+			// Preflight: confirm this is a native Google Doc. Drive's export
+			// endpoint only accepts native-gdoc source files; for Word/PDF/etc
+			// we want to surface a clear error rather than a cryptic API one.
 			const metadata = await fetchFileMetadata(documentId, auth.accessToken);
 			if (!isNativeGoogleDoc(metadata.mimeType)) {
 				throw new Error(describeNonNativeFile(metadata));
 			}
 
-			// Fetch document and comments in parallel
-			const [doc, commentsResponse] = await Promise.all([
-				fetchDocument(documentId, auth.accessToken),
-				fetchComments(documentId, auth.accessToken)
-			]);
-
+			// Export to .docx and adapt OOXML → GoogleDocsDocument + threads.
+			// We use .docx rather than the Docs API because OOXML preserves
+			// comment anchor ranges explicitly (<w:commentRangeStart/>); the
+			// Docs API drops those for .docx-imported gdocs.
+			const buffer = await exportDocx(documentId, auth.accessToken);
+			const { doc, threads } = parseDocx(buffer);
+			doc.title = metadata.name;
 			docTitle = doc.title;
-
-			// Convert Drive comments to internal format
-			const threads = convertDriveComments(commentsResponse.comments || []);
 
 			// Transform to markdown (with optional page filtering)
 			const parsedPageCount = pageCountInput ? parseInt(pageCountInput, 10) : undefined;
@@ -122,12 +120,11 @@
 			cachedAt = null;
 
 			// Save to history (always store full doc comment count)
-			const fullCommentCount = commentsResponse.comments?.length || 0;
 			addEntry({
 				docId: documentId,
 				docUrl: docUrl.trim(),
 				docTitle: doc.title,
-				commentCount: fullCommentCount,
+				commentCount: threads.length,
 				convertedAt: Date.now()
 			});
 			saveMarkdown(documentId, markdownOutput);

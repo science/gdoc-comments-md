@@ -134,55 +134,6 @@ export interface DriveFileMetadata {
 }
 
 /**
- * Google Drive API comment types
- * https://developers.google.com/drive/api/v3/reference/comments
- */
-
-export interface DriveCommentsResponse {
-	kind: string;
-	comments: DriveComment[];
-	nextPageToken?: string;
-}
-
-export interface DriveComment {
-	id: string;
-	kind: string;
-	createdTime: string;
-	modifiedTime: string;
-	author: CommentAuthor;
-	htmlContent?: string;
-	content: string;
-	deleted: boolean;
-	resolved: boolean;
-	quotedFileContent?: QuotedFileContent;
-	anchor?: string;
-	replies: CommentReply[];
-}
-
-export interface CommentAuthor {
-	kind: string;
-	displayName: string;
-	photoLink?: string;
-	emailAddress?: string;
-}
-
-export interface QuotedFileContent {
-	mimeType: string;
-	value: string;
-}
-
-export interface CommentReply {
-	id: string;
-	kind: string;
-	createdTime: string;
-	modifiedTime: string;
-	author: CommentAuthor;
-	htmlContent?: string;
-	content: string;
-	deleted: boolean;
-}
-
-/**
  * Internal types for transformation
  */
 
@@ -192,6 +143,20 @@ export interface CommentThread {
 	quotedText: string;
 	resolved: boolean;
 	comments: ThreadComment[];
+	/**
+	 * Index into `GoogleDocsDocument.body.content` identifying the paragraph
+	 * where this thread's range was originally anchored (i.e. where OOXML
+	 * placed `<w:commentRangeStart>`). When set, the transformer routes the
+	 * inline anchor to exactly that paragraph rather than scanning for the
+	 * first paragraph whose text happens to contain `quotedText` as a
+	 * substring — which silently pinned comments to the wrong paragraph when
+	 * the quoted word also appeared earlier in the doc (e.g. a title).
+	 *
+	 * Optional so callers that synthesize threads without adapter data (unit
+	 * tests, cached history entries from before this field existed) can fall
+	 * back to the original substring-matching behavior.
+	 */
+	anchorParaIndex?: number;
 }
 
 export interface ThreadComment {

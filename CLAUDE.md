@@ -30,11 +30,12 @@ gdoc-comments-md/
 │       ├── components/
 │       │   └── HistoryList.svelte # Conversion history list UI
 │       ├── services/
-│       │   ├── google-auth.ts    # OAuth2 flow
-│       │   ├── google-docs.ts    # Document fetch (Docs API)
-│       │   ├── google-drive.ts   # Comments fetch (Drive API)
-│       │   ├── markdown-storage.ts # IndexedDB cache for markdown
-│       │   └── transformer.ts    # Markdown generation
+│       │   ├── google-auth.ts          # OAuth2 flow
+│       │   ├── google-drive.ts         # Drive metadata (MIME preflight)
+│       │   ├── google-drive-export.ts  # Drive .docx export
+│       │   ├── docx-adapter.ts         # OOXML → GoogleDocsDocument + threads
+│       │   ├── markdown-storage.ts     # IndexedDB cache for markdown
+│       │   └── transformer.ts          # Markdown generation
 │       ├── stores/
 │       │   ├── auth.svelte.ts    # Auth state (Svelte 5 runes)
 │       │   └── history.svelte.ts # Conversion history state
@@ -93,12 +94,14 @@ npm run test:live        # Run live API tests (SPARINGLY - see below)
 ## Google API Integration
 
 ### OAuth2 Scopes Required
-- `https://www.googleapis.com/auth/documents.readonly`
-- `https://www.googleapis.com/auth/drive.readonly`
+- `https://www.googleapis.com/auth/drive.readonly` — used for both the MIME preflight and the `.docx` export.
+- `https://www.googleapis.com/auth/documents.readonly` — **requested but no longer exercised**; the Docs-API pipeline was retired in favor of the `.docx` path. Kept in the scope set for historical tokens; safe to drop in a future release.
 
 ### API Endpoints Used
-- **Docs API**: `GET https://docs.googleapis.com/v1/documents/{documentId}`
-- **Drive API**: `GET https://www.googleapis.com/drive/v3/files/{fileId}/comments?fields=*`
+- **Drive API (metadata preflight)**: `GET https://www.googleapis.com/drive/v3/files/{fileId}?fields=id,name,mimeType`
+- **Drive API (.docx export)**: `GET https://www.googleapis.com/drive/v3/files/{fileId}/export?mimeType=application/vnd.openxmlformats-officedocument.wordprocessingml.document`
+
+The pipeline intentionally does NOT use the Docs API. .docx-imported gdocs keep their comment anchor ranges only in the OOXML representation; the Docs API drops them. We export to .docx and parse OOXML instead.
 
 ### Credentials Management
 
@@ -131,8 +134,9 @@ GOOGLE_TEST_DOC_ID=your-test-document-id
 | Service | Purpose |
 |---------|---------|
 | `google-auth.ts` | OAuth2 flow using Google Identity Services (GIS) |
-| `google-docs.ts` | Fetch document content via Docs API |
-| `google-drive.ts` | Fetch comments via Drive API |
+| `google-drive.ts` | Drive metadata (MIME preflight before export) |
+| `google-drive-export.ts` | Drive `.docx` export (the single source fetch) |
+| `docx-adapter.ts` | OOXML → `GoogleDocsDocument` + `CommentThread[]` |
 | `transformer.ts` | Convert document + comments to markdown |
 | `markdown-storage.ts` | IndexedDB cache for converted markdown content |
 
@@ -150,12 +154,49 @@ GOOGLE_TEST_DOC_ID=your-test-document-id
 ```
 1. User provides Google Doc URL
 2. Extract document ID from URL
-3. Fetch document content (Docs API)
-4. Fetch comments with replies (Drive API)
-5. Map comment anchors to document positions
-6. Generate markdown with [text]^[cN] anchors
-7. Append blockquote comment threads after paragraphs
+3. Preflight: Drive metadata fetch to verify native-gdoc MIME type
+4. Export the doc to .docx via Drive API
+5. Unzip + DOM-walk the OOXML (`docx-adapter.ts`) to produce a
+   `GoogleDocsDocument` shape + `CommentThread[]` with `quotedText`
+   drawn from `<w:commentRangeStart/>` / `<w:commentRangeEnd/>` markers.
+   Each thread carries `anchorParaIndex` — the index of the paragraph
+   where its Start marker was seen. This is authoritative for routing,
+   so a comment whose quoted word happens to appear in an earlier
+   paragraph (e.g. a title) never leaks onto it.
+6. If page filtering is requested, `truncateByPageRange` slices
+   `body.content` + threads to the kept range. Threads whose
+   `anchorParaIndex` is outside the slice are dropped outright — no
+   substring-rescue path. Pagination is a single truncation step, not a
+   filter + remap + fallback pipeline.
+7. Generate markdown with [text]^[cN] anchors
+8. Append blockquote comment threads after paragraphs
+9. Threads whose anchor can't be matched inline (empty quotedText, or
+   contested position) render in a trailing `## Unanchored comments`
+   section instead of being silently dropped
 ```
+
+### Thread → paragraph routing
+
+The adapter records `anchorParaIndex` per thread at the moment it sees
+`<w:commentRangeStart>`. The transformer's `threadMatchesParagraph`
+treats `anchorParaIndex` as authoritative: a thread only matches the
+paragraph at that index, never anywhere else — even if its `quotedText`
+appears elsewhere. Threads without `anchorParaIndex` (synthetic inputs
+in unit tests, or pre-adapter history) fall back to the legacy
+substring-includes heuristic. For `.docx`-sourced threads the field is
+always set, so the fallback only ever runs in tests.
+
+### Thread merging
+
+When Google exports a gdoc to `.docx` without `commentsExtended.xml`
+(older export shape), reply chains flatten into separate top-level
+`<w:comment>` entries, each with its own redundant
+`<w:commentRangeStart>/<w:commentRangeEnd>` wrapping the same text. The
+adapter's `buildThreads` runs two passes: (1) `commentsExtended`-based
+threading when that file is present, (2) merge-by-`(quotedText,
+anchorParaIndex)` as a fallback. Reply chains collapse back into single
+threads; distinct conversations on the same word in different spots
+stay separate.
 
 ### Output Format (per DESIGN.md)
 

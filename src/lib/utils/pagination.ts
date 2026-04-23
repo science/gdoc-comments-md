@@ -4,7 +4,11 @@
  * every ~3000 characters. Hard page breaks force a boundary.
  */
 
-import type { StructuralElement, CommentThread } from '$lib/types/google';
+import type {
+	StructuralElement,
+	CommentThread,
+	GoogleDocsDocument
+} from '$lib/types/google';
 
 export interface PageBoundary {
 	pageNumber: number;
@@ -169,22 +173,85 @@ function extractAllText(elements: StructuralElement[]): string {
 		.join('');
 }
 
-/**
- * Filter comment threads to only those whose quotedText appears in the
- * given elements, and renumber anchor IDs sequentially (c1, c2, c3...).
- */
-export function filterAndRenumberThreads(
-	threads: CommentThread[],
-	elements: StructuralElement[]
-): CommentThread[] {
-	const fullText = extractAllText(elements);
+export interface TruncateResult {
+	doc: GoogleDocsDocument;
+	threads: CommentThread[];
+	totalPages: number;
+	pageRange: { start: number; end: number };
+}
 
-	const matching = threads.filter(
-		(thread) => thread.quotedText && fullText.includes(thread.quotedText)
+/**
+ * Truncate a parsed document to the requested page range.
+ *
+ * Returns a new `doc` with `body.content` sliced to the kept paragraphs and
+ * a `threads` array containing only the threads whose anchor lies inside
+ * the kept slice (with `anchorParaIndex` remapped to the new 0-based index).
+ *
+ * Threads whose `anchorParaIndex` is **outside** the kept slice are
+ * dropped entirely — never rehomed onto an earlier paragraph by substring
+ * fallback. This is the "nuked from orbit" property: after truncation,
+ * every remaining thread's anchor corresponds to an actual kept
+ * paragraph, so there is no mechanism that could leak an out-of-range
+ * comment onto the title or a heading.
+ *
+ * Legacy threads without `anchorParaIndex` (synthetic test inputs,
+ * pre-adapter callers) keep the historical substring-membership behavior
+ * — this never triggers for adapter-sourced threads since the adapter
+ * always populates the field.
+ */
+export function truncateByPageRange(
+	doc: GoogleDocsDocument,
+	threads: CommentThread[],
+	startPage: number,
+	pageCount: number | undefined,
+	charsPerPage: number = DEFAULT_CHARS_PER_PAGE
+): TruncateResult {
+	const { elements, totalPages, startPage: actualStart, endPage } = filterByPageRange(
+		doc.body.content,
+		startPage,
+		pageCount,
+		charsPerPage
 	);
 
-	return matching.map((thread, index) => ({
-		...thread,
-		anchorId: `c${index + 1}`
-	}));
+	// Map original element index → kept-slice index by reference identity.
+	// `filterByPageRange` returns references copied from `doc.body.content`,
+	// so identity comparison is safe and cheap.
+	const originalIndexByElement = new Map<StructuralElement, number>();
+	for (let i = 0; i < doc.body.content.length; i++) {
+		originalIndexByElement.set(doc.body.content[i], i);
+	}
+	const remappedIndexByOriginal = new Map<number, number>();
+	for (let i = 0; i < elements.length; i++) {
+		const orig = originalIndexByElement.get(elements[i]);
+		if (orig !== undefined) remappedIndexByOriginal.set(orig, i);
+	}
+
+	const keptText = extractAllText(elements);
+
+	const kept = threads.filter((thread) => {
+		if (!thread.quotedText) return false;
+		if (thread.anchorParaIndex !== undefined) {
+			return remappedIndexByOriginal.has(thread.anchorParaIndex);
+		}
+		// Legacy: no paraIndex → fall back to substring membership.
+		return keptText.includes(thread.quotedText);
+	});
+
+	const remapped = kept.map((thread, index) => {
+		const base: CommentThread = {
+			...thread,
+			anchorId: `c${index + 1}`
+		};
+		if (thread.anchorParaIndex !== undefined) {
+			base.anchorParaIndex = remappedIndexByOriginal.get(thread.anchorParaIndex)!;
+		}
+		return base;
+	});
+
+	return {
+		doc: { ...doc, body: { content: elements } },
+		threads: remapped,
+		totalPages,
+		pageRange: { start: actualStart, end: endPage }
+	};
 }
